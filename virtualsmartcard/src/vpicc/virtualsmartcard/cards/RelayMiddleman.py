@@ -1,6 +1,58 @@
 from enum import Enum
 import random
 import hashlib
+from Crypto.Cipher import DES3, DES
+
+class CDES3:
+    def __init__(self, key:list, iv:list):
+        self.keySize = len(key)
+        self.keyVal = bytes(key)
+        self.iv = bytes(iv)
+        self.cipher = DES3.new(self.keyVal,DES3.MODE_CBC, iv=self.iv)
+
+            
+    def encrypt(self, data:list):
+        resp = list(self.cipher.encrypt(bytes(data)))
+
+        return resp
+    
+    def decrypt(self, data:list):
+        resp = list(self.cipher.decrypt(bytes(data)))
+        
+        return resp
+
+class CMAC:
+    def __init__(self, key:list, iv:list):
+        self.iv = bytes(iv)
+        self.keySize = len(key)
+        match self.keySize:
+            case 16:
+                self.keyVal1 = bytes(key[:8])
+                self.keyVal2 = bytes(key[8:])
+                self.keyVal3 = self.keyVal1
+            case 24:
+                self.keyVal1 = bytes(key[:8])
+                self.keyVal2 = bytes(key[8:16])
+                self.keyVal3 = bytes(key[16:])
+            case _:
+                raise Exception("Key size must be 16 or 24 bytes long")
+        
+        self.cipherDES = DES.new(self.keyVal1, DES.MODE_CBC, iv=self.iv)
+        self.cipherDES3 = DES3.new(self.keyVal1+self.keyVal2, DES3.MODE_CBC, iv=self.iv)
+    
+    def mac(self, data:list):
+        if len(data) > 8:
+            tmp_iv = self.cipherDES.encrypt(bytes[data[:-8]])[-8:]
+            self.cipherDES3 = DES3.new(self.keyVal1+self.keyVal2, DES3.MODE_CBC, iv=tmp_iv)
+        
+        resp = list(self.cipherDES3.encrypt(bytes(data[-8:])))
+        self.cipherDES3 = DES3.new(self.keyVal1+self.keyVal2, DES3.MODE_CBC, iv=self.iv)
+        
+        return resp
+
+        
+        
+
 
 class Stage(Enum):
     START = 1
@@ -37,6 +89,18 @@ APDU_GET_DATA_DATA2 = [ 0x00, 0xc0, 0x00, 0x00, 0x08 ]
 DIFFENC = [ 0x00, 0x00, 0x00, 0x01 ]
 DIFFMAC = [ 0x00, 0x00, 0x00, 0x02 ]
 
+#DAPP
+SELECTKEY = [ 0x0c, 0x22, 0x81, 0xb6 ]
+VERIFYCERT1 = [ 0x1c, 0x2A, 0x00, 0xAE ]
+VERIFYCERT2 = [ 0x0c, 0x2A, 0x00, 0xAE ]
+SETCHR = [ 0x0c, 0x22, 0x81, 0xA4 ]
+GETCHALLENGE = [ 0x0c, 0x84, 0x00, 0x00 ]
+EXTAUTH1 = [ 0x1c, 0x82, 0x00, 0x00 ]
+EXTAUTH2 = [ 0x0c, 0x82, 0x00, 0x00 ]
+INTAUTH = [ 0x0c, 0x22, 0x41, 0xa4 ]
+GIVERANDOM = [ 0x0c, 0x88, 0x00, 0x00 ]
+
+
 
 class RelayMiddleman(object):
     #INIT_DH_PARAM
@@ -57,14 +121,34 @@ class RelayMiddleman(object):
     dh_IFDpubKey = 0
     dh_ICCpubKeyBytes = []
     dh_ICCpubKey = 0
-    sessENC_IFD, sessMAC_IFD, sessSSC_IFD
-    sessENC_ICC, sessMAC_ICC, sessSSC_ICC
+    #sessENC_IFD, sessMAC_IFD, sessSSC_IFD
+    #sessENC_ICC, sessMAC_ICC, sessSSC_ICC
 
     def __init__(self):
         self.stage = Stage.START
 
         self.curr_apduSize = 0
-        self.curr_apdu = bytes() 
+        self.curr_apdu = bytes()
+
+    @staticmethod
+    def increment(seq:list):
+        for i in range(len(seq) - 1, -1, -1):
+            if seq[i] < 255:
+                seq[i] += 1
+                for j in range(i+1, len(seq)):
+                    seq[j] = 0
+                return
+        
+    def craft_respSM(self, keyEnc:list, keySig:list, resp:list, seq:list):
+        RelayMiddleman.increment(self.sessSSC_ICC)
+        RelayMiddleman.increment(self.sessSSC_IFD)
+        calcMac = []
+        swBa = []
+        tagMacBa = []
+        iv = [0 for _ in range(8)]
+
+        encDes = CDES3(keyEnc, iv)
+        sigMac = CMAC(keySig, iv)
 
     def handleInPDU(self, inPDU: bytes):
         """
@@ -82,7 +166,6 @@ class RelayMiddleman(object):
                 #self.curr_apdu is a list of int
                 if self.curr_apdu == APDU_GETDHDUOPDATA_G:
                     self.stage = Stage.INIT_DH_PARAM
-                    print(self.curr_apdu)
             case Stage.DH_KEY_EXCHANGE:
                 self.dh_key_exchange_in()
             
@@ -182,10 +265,24 @@ class RelayMiddleman(object):
             self.dh_ICCpubKeyBytes[248:256] = self.resp[:8]
             self.resp[:8] = self.dh_pubKey_mitmBytes[248:256]
 
-            self.dh_ICCpubKey = int.from_bytes(bytes(self.dh_ICCpubKeyBytes), 'big')
             self.dh_IFDpubKey = int.from_bytes(bytes(self.dh_IFDpubKeyBytes), 'big')
+            self.dh_ICCpubKey = int.from_bytes(bytes(self.dh_ICCpubKeyBytes), 'big')
         
             secretIFD = pow(self.dh_IFDpubKey, self.dh_prKey_mitm, self.dh_p)
             secretIFDBytes = list(int.to_bytes(secretIFD, 256, 'big'))
-            sessENC_IFD = hashlib.sha256(secretIFDBytes + DIFFENC).hexdigest()
-            print(sessENC_IFD)
+            self.sessENC_IFD = list(hashlib.sha256(bytes(secretIFDBytes + DIFFENC)).digest()[:16])
+            self.sessMAC_IFD = list(hashlib.sha256(bytes(secretIFDBytes + DIFFMAC)).digest()[:16])
+
+
+            secretICC = pow(self.dh_ICCpubKey, self.dh_prKey_mitm, self.dh_p)
+            secretICCBytes = list(int.to_bytes(secretICC, 256, 'big'))
+            self.sessENC_ICC = list(hashlib.sha256(bytes(secretICCBytes + DIFFENC)).digest()[:16])
+            self.sessMAC_ICC = list(hashlib.sha256(bytes(secretICCBytes + DIFFMAC)).digest()[:16])
+
+            self.sessSSC_IFD = [0 for _ in range(8)]
+            self.sessSSC_IFD[7] = 1
+
+            self.sessSSC_ICC = [0 for _ in range(8)]
+            self.sessSSC_ICC[7] = 1
+
+            self.stage = Stage.DAPP
