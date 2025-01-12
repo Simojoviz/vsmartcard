@@ -3,6 +3,106 @@ import random
 import hashlib
 from Crypto.Cipher import DES3, DES
 
+def ISOPadLen(Len):
+	if Len & 0x7 == 0:
+		return Len+8
+	else:
+		return Len - (Len & 0x7) + 0x08
+    
+def ISOPad(data:list):
+    size = ISOPadLen(len(data))
+    resp = [0 for _ in range(size)]
+    resp[:len(data)] = data.copy()
+    resp[len(data)] = 0x80
+
+    return resp
+
+def RemoveISOPad(paddedData:list):
+    for i in range(len(paddedData) - 1, -1, -1):
+        if paddedData[i] != 0:
+            if paddedData[i] != 0x80:
+                raise Exception("Padding error")
+            else:
+                return i
+    
+    raise Exception("Padding error")
+
+def ASN1TLength(tag:int):
+    tLen = 0
+    while tag != 0:
+        tLen += 1
+        tag >>= 0
+    
+    return tLen
+
+def ASN1LLength(len:int):
+    if len < 0x80:
+        return 1
+    else:
+        if len<=0xff:
+            return 2
+        elif len<=0xffff:
+            return 3
+        elif len<=0xffffff:
+            return 4
+        elif len<=0xffffffff:
+            return 5
+    
+    raise Exception("Not a valid ASN1 lenth")
+
+def putASN1Tag(tag:int, data:list):
+    tPos = 0
+    while tag != 0:
+        b = tag >> 24
+        if b != 0:
+            data[tPos] = b
+            tPos += 1
+        tag <<= 8 
+
+def putASN1Length(len:int, data:list, start:int):
+    if len < 0x80:
+        data[start+0] = len
+    else:
+        if len <= 0xff:
+            data[start+0] = 0x81
+            data[start+1] = len
+        elif len <= 0xffff:
+            data[start+0] = 0x82;
+            data[start+1] = len >> 8
+            data[start+2] = len & 0xff
+        elif len <= 0xffffff:
+            data[start+0] = 0x83
+            data[start+1] = len >> 16
+            data[start+2] = (len >> 8) & 0xff
+            data[start+3] = len & 0xff
+        elif len <= 0xffffffff: 
+            data[start+0] = 0x84
+            data[start+1] = len >> 24
+            data[start+2] = (len >> 16) & 0xff
+            data[start+3] = (len >> 8) & 0xff
+            data[start+4] = len & 0xff
+
+def setASN1Tag(data:list, tag:int, content:list):
+    tl = ASN1TLength(tag)
+    ll = ASN1LLength(len(content))
+    data.append([0 for _ in range(tl+ll+len(content))])
+    putASN1Tag(tag, data)
+    putASN1Length(len(content), data, tl)
+    data[tl+ll:] = content.copy()
+
+    return data
+
+def ASN1Tag(tag:int, content:list):
+    tl = ASN1TLength(tag)
+    ll = ASN1LLength(len(content))
+    result = [0 for _ in range(tl+ll+len(content))]
+    putASN1Tag(tag, result)
+    input = result[tl:]
+    putASN1Length(len(content), input);
+    result[tl+ll:] = content.copy()
+    
+    return result
+
 class CDES3:
     def __init__(self, key:list, iv:list):
         self.keySize = len(key)
@@ -51,9 +151,6 @@ class CMAC:
         return resp
 
         
-        
-
-
 class Stage(Enum):
     START = 1
     INIT_DH_PARAM = 2
@@ -100,6 +197,8 @@ EXTAUTH2 = [ 0x0c, 0x82, 0x00, 0x00 ]
 INTAUTH = [ 0x0c, 0x22, 0x41, 0xa4 ]
 GIVERANDOM = [ 0x0c, 0x88, 0x00, 0x00 ]
 
+SNIFD = [ 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 ]
+SN_ICC = [ 0x00, 0x68, 0x37, 0x56, 0x18, 0x03, 0x30, 0x1f ]
 
 
 class RelayMiddleman(object):
@@ -150,6 +249,79 @@ class RelayMiddleman(object):
         encDes = CDES3(keyEnc, iv)
         sigMac = CMAC(keySig, iv)
 
+        calcMac = seq.copy()
+        calcMac.append(resp[0:resp[0+1] + 2])
+
+        sw = [ 0x90, 0x00 ]
+        tagMac = [ 0x8e, 0x08 ]
+
+        tmp = resp[0:resp[0+1] + 2]
+        smMac = sigMac.mac(ISOPad(calcMac))
+
+        return tmp+tagMac+smMac+sw
+
+    def SM(self, keyEnc:list, keySig:list, apdu:list, seq:list):
+        RelayMiddleman.increment(self.sessSSC_ICC)
+        RelayMiddleman.increment(self.sessSSC_IFD)
+
+        smHead = apdu[:4]
+        smHead[0] |= 0x0C
+
+        calcMac = ISOPad(seq.copy().append(smHead))
+
+        iv = [0 for _ in range(8)]
+
+        encDes = CDES3(keyEnc, iv)
+        sigMac = CMAC(keySig, iv)
+
+        Val01 = [1]
+        datafield = []
+        doob = []
+        if apdu[4] != 0 and len(apdu) > 5:
+            enc = encDes.encrypt(ISOPad(apdu[5:apdu[4]]))
+            if (apdu[1] & 1) == 0:
+                setASN1Tag(doob,0x87, Val01.append(enc))
+            else:
+                setASN1Tag(doob, 0x85, enc)
+
+            calcMac.append(doob)
+            datafield.append(doob)
+
+        if apdu[4] == 0 and len(apdu) > 7:
+            enc = encDes.encrypt(ISOPad(apdu[7: (apdu[5] << 8)| apdu[6] ]))
+            if apdu[1] & 1 == 0:
+                setASN1Tag(doob, 0x87, Val01.append(enc))
+            else:
+                setASN1Tag(doob, 0x85, enc)
+
+            calcMac.append(doob)
+            datafield.append(doob)
+
+        if len(apdu) == 5 or len(apdu) == (apdu[4] + 6):
+            le = [apdu[len(apdu) - 1]]
+            setASN1Tag(doob, 0x97, le)
+            calcMac.append(doob)
+            datafield.append(doob)
+
+        macBa = sigMac.Mac(ISOPad(calcMac))
+
+        tagMacBa = ASN1Tag(0x8e, macBa)
+        datafield.append(tagMacBa)
+
+
+        elabResp =  []
+        if len(datafield)<0x100:
+            elabResp = smHead + [len(datafield)] + datafield + [0x00]
+        else:
+            lenBA = [len(datafield)]
+            lenBA.reverse()
+            lenBa = lenBA[-3:]
+
+            elabResp = smHead + lenBa + datafield + [0x00] + [0x00]
+
+        return elabResp
+
+
     def handleInPDU(self, inPDU: bytes):
         """
         This method is called on each PDU that is fed into the realy (vdpu -> vicc).
@@ -168,6 +340,10 @@ class RelayMiddleman(object):
                     self.stage = Stage.INIT_DH_PARAM
             case Stage.DH_KEY_EXCHANGE:
                 self.dh_key_exchange_in()
+            case Stage.DAPP:
+                self.dapp_in()
+            case Stage.VERIFYPIN:
+                self.verifypin_in()
             
         
 
@@ -192,6 +368,10 @@ class RelayMiddleman(object):
                 self.read_dapp_pubkey_out()
             case Stage.DH_KEY_EXCHANGE:
                 self.dh_key_exchange_out()
+            case Stage.DAPP:
+                self.dapp_out()
+            case Stage.VERIFYPIN:
+                self.verifypin_out()
 
         #print("resp:")
         #print(bytes(outPDU).hex(), "\n")
@@ -243,7 +423,151 @@ class RelayMiddleman(object):
                 self.dh_gBytes += self.resp[:18]
             if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_P:
                 self.dh_pBytes += self.resp[:18]
+
     
+    def dapp_in(self):
+        if self.curr_apdu[:4] == SELECTKEY:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[8:16]
+            data = encDes.decrypt(supp)
+            print(data)
+            data = data[:RemoveISOPad(data)]
+
+            le = [0]
+            head = [0x00, 0x22, 0x81, 0xb6]
+            smApdu = head + [len(data)] + data + le
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == VERIFYCERT1:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[9:9+232]
+            data = encDes.decrypt(supp)
+            data = data[:RemoveISOPad(data)]
+
+            emptyBa = []
+            le = [0]
+            head = [0x10, 0x2A, 0x00, 0xAE]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == VERIFYCERT2:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[9:9+128]
+            data = encDes.decrypt(supp)
+            data = data[:RemoveISOPad(data)]
+
+            emptyBa = []
+            le = [0]
+            head = [0x00, 0x2A, 0x00, 0xAE]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == SETCHR:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[8:8+16]
+            data = encDes.decrypt(supp)
+            data = data[:RemoveISOPad(data)]
+
+            emptyBa = []
+            le = [0]
+            head = [0x00, 0x22, 0x81, 0xA4]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == GETCHALLENGE:
+            chLen = [8]
+            head = [0x00, 0x84, 0x00, 0x00]
+
+            data = []
+            smApdu = head + [len(data)] + data + chLen
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == EXTAUTH1:
+            # crafting ext auth message
+            padSize = 222
+            PRND = [random.randint(0,255) for i in range(padSize)]
+            toHash = PRND + self.dh_pubKey_mitmBytes + SNIFD + self.challenge + self.dh_ICCpubKeyBytes + self.dh_gBytes + self.dh_pBytes + self.dh_qBytes 
+            toHash = list(hashlib.sha256(bytes(toHash)).digest())
+            toSign = [0x6a] +  toHash + [0xbc]
+
+            module = int.from_bytes(DEFMODULE, 'big')
+            privexp = int.from_bytes(DEFPRIVEXP, 'big')
+            signResp = pow(toSign, privexp, module)
+            self.chResponse = SNIFD + signResp
+
+            # crafting SM apdu
+            data = self.chResponse[:231]
+            emptyBa = []
+            le = [0]
+            head = [0x10, 0x82, 0x00, 0x00]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == EXTAUTH2:
+            data = self.chResponse[231:231+33]
+            emptyBa = []
+            le = [0]
+            head = [0x00, 0x82, 0x00, 0x00]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == INTAUTH:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[8:8+8]
+            data = encDes.decrypt(supp)
+            data = data[:RemoveISOPad(data)]
+
+            emptyBa = []
+            le = [0]
+            head = [0x00, 0x22, 0x41, 0xa4]
+            smApdu = head + [len(data)] + data + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+        elif self.curr_apdu[:4] == GIVERANDOM:
+            iv = [0 for _ in range(8)]
+            encDes = CDES3(self.sessENC_IFD, iv)
+            supp = self.curr_apdu[8:8+16]
+            data = encDes.decrypt(supp)
+            self.rndIFD = data[:RemoveISOPad(data)]
+
+            emptyBa = []
+            le = [0]
+            head = [0x00, 0x88, 0x00, 0x00]
+            smApdu = head + [len(self.rndIFD)] + self.rndIFD + emptyBa
+            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+            self.curr_apdu = smApdu.copy()
+
+    def verifypin_in(self):
+        iv = [0 for _ in range(8)]
+        encDes = CDES3(self.sessENC_IFD, iv)
+        supp = self.curr_apdu[8:8+16]
+        data = encDes.decrypt(supp)
+        decPin = data[:RemoveISOPad(data)]
+
+        print("PIN dec:", decPin)
+
+        emptyBa = []
+        le = [0]
+        head = [0x00, 0x20, 0x00, 0x81]
+        smApdu = head + [len(decPin)] + decPin + emptyBa
+        smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
+
+        self.curr_apdu = smApdu.copy()
+
     def read_dapp_pubkey_out(self):
         #TODO chek if array offsets are correct
         if self.curr_apdu[:5] == ADPU_PUBKEY1:
@@ -259,7 +583,7 @@ class RelayMiddleman(object):
     def dh_key_exchange_out(self):
         if self.curr_apdu[:11] == APDU_GET_DATA_DATA1:
             self.dh_ICCpubKeyBytes[:248] = self.resp[8:248]
-            self.resp[8:248] = self.dh_pubKey_mitmBytes[:248]
+            self.resp[8:248+8] = self.dh_pubKey_mitmBytes[:248]
 
         if self.curr_apdu[:11] == APDU_GET_DATA_DATA2:
             self.dh_ICCpubKeyBytes[248:256] = self.resp[:8]
@@ -286,3 +610,100 @@ class RelayMiddleman(object):
             self.sessSSC_ICC[7] = 1
 
             self.stage = Stage.DAPP
+
+    
+    def dapp_out(self):
+        if self.curr_apdu[:4] == GETCHALLENGE:
+            # dec decipher using session key of the mitm with the ICC
+            iv = [0 for _ in range(8)]
+            encDes_ICC = CDES3(self.sessENC_ICC, iv)
+            
+            # saving the encrypted challenge
+            tmp = self.resp[3:3+16]
+            data = encDes_ICC.decrypt(tmp)
+            self.challenge = data[:RemoveISOPad(data)]
+
+            # crafting the response
+            RelayMiddleman.increment(self.sessSSC_ICC)
+            RelayMiddleman.increment(self.sessSSC_IFD)
+            encDes_IFD = CDES3(self.sessENC_IFD, iv)
+            sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
+
+            encChallenge = encDes_IFD.encrypt(ISOPad(self.challenge))
+
+            Val01 = [1]
+            datafield = []
+            setASN1Tag(datafield, 0x87, Val01.append(encChallenge))
+            calcMac = self.sessSSC_IFD.copy()
+            macTail= [ 0x99, 0x02, 0x90, 0x00 ]
+
+            calcMac.append(datafield)
+            calcMac.append(macTail)
+            smMac = sigMac_IFD.mac(ISOPad(calcMac))
+            sw = [ 0x90, 0x00 ]
+
+            data = datafield + macTail
+            ccfb = []
+            setASN1Tag(ccfb, 0x8e, smMac)
+            respBa = data + ccfb + sw
+
+            self.resp = respBa.copy()
+        elif self.curr_apdu[:4] == GIVERANDOM:
+            # crafting the int auth payload
+            padSize = 222
+            PRND2 = [random.randint(0,255) for i in range(padSize)]
+            toHashIFD = PRND2 + self.dh_pubKey_mitmBytes + SN_ICC + self.rndIFD + self.dh_IFDpubKeyBytes + self.dh_gBytes + self.dh_pBytes + self.dh_qBytes 
+            calcHashIFD = list(hashlib.sha256(bytes(toHashIFD)).digest())
+
+            respBa = [0x6a] + PRND2 + calcHashIFD +[0xbc]
+
+            module = int.from_bytes(DEFMODULE, 'big')
+            privexp = int.from_bytes(DEFPRIVEXP, 'big')
+            SIG = pow(respBa, privexp, module)
+            intAuthresp = SN_ICC + SIG
+
+            # crafting the SM response
+            iv = [0 for _ in range(8)]
+            RelayMiddleman.increment(self.sessSSC_ICC)
+            RelayMiddleman.increment(self.sessSSC_IFD)
+            encDes_IFD = CDES3(self.sessENC_IFD, iv)
+            sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
+
+            encIntAuthresp = encDes_IFD.encrypt(ISOPad(intAuthresp))
+
+            Val01 = [1]
+            datafield = []
+            setASN1Tag(datafield, 0x87, Val01.append(encIntAuthresp))
+            calcMac = self.sessSSC_IFD.copy()
+            macTail= [ 0x99, 0x02, 0x90, 0x00 ]
+
+            calcMac.append(datafield)
+            calcMac.append(macTail)
+            smMac = sigMac_IFD.mac(ISOPad(calcMac))
+            sw = [ 0x90, 0x00 ]
+            data = datafield + macTail
+            ccfb = []
+            setASN1Tag(ccfb, 0x8e, smMac)
+            self.intAuthSMresp = data + ccfb + sw
+
+            self.resp[:256] = self.intAuthSMresp[:256]
+        elif self.prev_apdu[:4] == GIVERANDOM:
+            self.resp[:35] = self.intAuthSMresp[256:256+35]
+            self.stage = Stage.VERIFYPIN
+
+            challengeBa = self.challenge[-4:]
+            rndIFDBa = self.rndIFD[-4:]
+
+            self.sessSSC_ICC = challengeBa.copy() + rndIFDBa.copy()
+            self.sessSSC_IFD = challengeBa.copy() + rndIFDBa.copy()
+        else:
+            crafted_resp = self.craft_respSM(self.sessENC_IFD, self.sessMAC_IFD, self.resp[:16], self.sessSSC_IFD)
+
+            self.resp[:16] = crafted_resp[:16]
+
+    def verifypin_out(self):
+        crafted_resp = self.craft_respSM(self.sessENC_IFD, self.sessMAC_IFD, self.resp[:16], self.sessSSC_IFD)
+
+        self.resp[:16] = crafted_resp[:16]
+
+        self.stage = Stage.READSERIALECIE
