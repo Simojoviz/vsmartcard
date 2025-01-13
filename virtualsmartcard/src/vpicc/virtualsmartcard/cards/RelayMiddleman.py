@@ -28,29 +28,38 @@ def RemoveISOPad(paddedData:list):
     raise Exception("Padding error")
 
 def ASN1TLength(tag:int):
+    print("Entering ASN1TLength")
     tLen = 0
     while tag != 0:
         tLen += 1
-        tag >>= 0
+        tag >>= 8
     
+    print("Exiting ASN1TLength")
     return tLen
 
 def ASN1LLength(len:int):
+    print("Entering ASN1LLength")
     if len < 0x80:
+        print("Exiting ASN1LLength")
         return 1
     else:
         if len<=0xff:
+            print("Exiting ASN1LLength")
             return 2
         elif len<=0xffff:
+            print("Exiting ASN1LLength")
             return 3
         elif len<=0xffffff:
+            print("Exiting ASN1LLength")
             return 4
         elif len<=0xffffffff:
+            print("Exiting ASN1LLength")
             return 5
     
     raise Exception("Not a valid ASN1 lenth")
 
 def putASN1Tag(tag:int, data:list):
+    print("Entering putASN1Tag")
     tPos = 0
     while tag != 0:
         b = tag >> 24
@@ -58,8 +67,11 @@ def putASN1Tag(tag:int, data:list):
             data[tPos] = b
             tPos += 1
         tag <<= 8 
+        tag &= 0xffffffff
+    print("Exiting putASN1Tag")
 
 def putASN1Length(len:int, data:list, start:int):
+    print("Entering putASN1Length")
     if len < 0x80:
         data[start+0] = len
     else:
@@ -67,7 +79,7 @@ def putASN1Length(len:int, data:list, start:int):
             data[start+0] = 0x81
             data[start+1] = len
         elif len <= 0xffff:
-            data[start+0] = 0x82;
+            data[start+0] = 0x82
             data[start+1] = len >> 8
             data[start+2] = len & 0xff
         elif len <= 0xffffff:
@@ -81,15 +93,19 @@ def putASN1Length(len:int, data:list, start:int):
             data[start+2] = (len >> 16) & 0xff
             data[start+3] = (len >> 8) & 0xff
             data[start+4] = len & 0xff
+    print("Entering putASN1Length")
 
 def setASN1Tag(data:list, tag:int, content:list):
+    print(data)
+    print("Entering setASN1Tag")
     tl = ASN1TLength(tag)
     ll = ASN1LLength(len(content))
-    data.append([0 for _ in range(tl+ll+len(content))])
+    data += [0 for _ in range(tl+ll+len(content))]
     putASN1Tag(tag, data)
     putASN1Length(len(content), data, tl)
     data[tl+ll:] = content.copy()
 
+    print("Exiting setASN1Tag")
     return data
 
 def ASN1Tag(tag:int, content:list):
@@ -97,10 +113,13 @@ def ASN1Tag(tag:int, content:list):
     ll = ASN1LLength(len(content))
     result = [0 for _ in range(tl+ll+len(content))]
     putASN1Tag(tag, result)
-    input = result[tl:]
-    putASN1Length(len(content), input);
+    print([hex(i) for i in result])
+    #input = result[tl:]
+    putASN1Length(len(content), result, tl)
     result[tl+ll:] = content.copy()
     
+    print(hex(tag))
+    print([hex(i) for i in result])
     return result
 
 class CDES3:
@@ -142,7 +161,7 @@ class CMAC:
     
     def mac(self, data:list):
         if len(data) > 8:
-            tmp_iv = self.cipherDES.encrypt(bytes[data[:-8]])[-8:]
+            tmp_iv = self.cipherDES.encrypt(bytes(data[:-8]))[-8:]
             self.cipherDES3 = DES3.new(self.keyVal1+self.keyVal2, DES3.MODE_CBC, iv=tmp_iv)
         
         resp = list(self.cipherDES3.encrypt(bytes(data[-8:])))
@@ -250,7 +269,7 @@ class RelayMiddleman(object):
         sigMac = CMAC(keySig, iv)
 
         calcMac = seq.copy()
-        calcMac.append(resp[0:resp[0+1] + 2])
+        calcMac += resp[0:resp[0+1] + 2]
 
         sw = [ 0x90, 0x00 ]
         tagMac = [ 0x8e, 0x08 ]
@@ -261,13 +280,16 @@ class RelayMiddleman(object):
         return tmp+tagMac+smMac+sw
 
     def SM(self, keyEnc:list, keySig:list, apdu:list, seq:list):
+        print("Entered SM")
         RelayMiddleman.increment(self.sessSSC_ICC)
         RelayMiddleman.increment(self.sessSSC_IFD)
 
         smHead = apdu[:4]
         smHead[0] |= 0x0C
 
-        calcMac = ISOPad(seq.copy().append(smHead))
+        calcMac = seq.copy()
+        calcMac += smHead
+        calcMac = ISOPad(calcMac)
 
         iv = [0 for _ in range(8)]
 
@@ -278,35 +300,43 @@ class RelayMiddleman(object):
         datafield = []
         doob = []
         if apdu[4] != 0 and len(apdu) > 5:
+            print("Before enc")
             enc = encDes.encrypt(ISOPad(apdu[5:apdu[4]]))
+            print("After enc")
             if (apdu[1] & 1) == 0:
-                setASN1Tag(doob,0x87, Val01.append(enc))
+                Val01 += enc
+                setASN1Tag(doob,0x87, Val01)
             else:
                 setASN1Tag(doob, 0x85, enc)
 
-            calcMac.append(doob)
-            datafield.append(doob)
+            calcMac += doob
+            datafield += doob
 
         if apdu[4] == 0 and len(apdu) > 7:
+            print("Before enc")
             enc = encDes.encrypt(ISOPad(apdu[7: (apdu[5] << 8)| apdu[6] ]))
+            print("After enc")
             if apdu[1] & 1 == 0:
-                setASN1Tag(doob, 0x87, Val01.append(enc))
+                Val01 += enc
+                setASN1Tag(doob, 0x87, Val01)
             else:
                 setASN1Tag(doob, 0x85, enc)
 
-            calcMac.append(doob)
-            datafield.append(doob)
+            calcMac += doob
+            datafield += doob
 
         if len(apdu) == 5 or len(apdu) == (apdu[4] + 6):
             le = [apdu[len(apdu) - 1]]
             setASN1Tag(doob, 0x97, le)
-            calcMac.append(doob)
-            datafield.append(doob)
+            calcMac += doob
+            datafield += doob
 
-        macBa = sigMac.Mac(ISOPad(calcMac))
+        print("Before mac")
+        macBa = sigMac.mac(ISOPad(calcMac))
+        print("after mac")
 
         tagMacBa = ASN1Tag(0x8e, macBa)
-        datafield.append(tagMacBa)
+        datafield += tagMacBa
 
 
         elabResp =  []
@@ -382,15 +412,28 @@ class RelayMiddleman(object):
 
     def dh_key_exchange_in(self):
         if self.curr_apdu[0:4] == MSE_SET1:
-            self.dh_prKey_mitm_bytes = [random.randint(0,255) for i in range(len(self.dh_qBytes))]
-            while self.dh_qBytes[0] < self.dh_prKey_mitm_bytes[0]:
-                self.dh_prKey_mitm_bytes = [random.randint(0,255) for i in range(len(self.dh_qBytes))]
+            self.dh_prKey_mitmBytes = [random.randint(0,255) for i in range(len(self.dh_qBytes))]
+            while self.dh_qBytes[0] < self.dh_prKey_mitmBytes[0]:
+                self.dh_prKey_mitmBytes = [random.randint(0,255) for i in range(len(self.dh_qBytes))]
 
-            self.dh_prKey_mitm_bytes[-1] |= 1
+            self.dh_prKey_mitmBytes[-1] |= 1
+
+            #print("dh_prKey_mitmBytes:")
+            #print([hex(i) for i in self.dh_prKey_mitmBytes])
+            #print("dh_gBytes:")
+            #print([hex(i) for i in self.dh_gBytes])
+            #print("dh_pBytes:")
+            #print([hex(i) for i in self.dh_pBytes])
+            #print("dh_qBytes:")
+            #print([hex(i) for i in self.dh_qBytes])
 
             self.dh_g = int.from_bytes(bytes(self.dh_gBytes), 'big')
             self.dh_p = int.from_bytes(bytes(self.dh_pBytes), 'big')
-            self.dh_prKey_mitm = int.from_bytes(bytes(self.dh_prKey_mitm_bytes), 'big')
+            self.dh_prKey_mitm = int.from_bytes(bytes(self.dh_prKey_mitmBytes), 'big')
+
+            #print(hex(self.dh_g),"\n")
+            #print(hex(self.dh_prKey_mitm),"\n")
+            #print(hex(self.dh_p),"\n")
             self.dh_pubKey_mitm = pow(self.dh_g, self.dh_prKey_mitm, self.dh_p)
             self.dh_pubKey_mitmBytes = list(int.to_bytes(self.dh_pubKey_mitm, 256, 'big'))
 
@@ -400,46 +443,31 @@ class RelayMiddleman(object):
 
         if self.curr_apdu[0:4] == MSE_SET2:
             #TODO check array offsets
-            self.dh_IFDpubKeyBytes[245:] = self.curr_apdu[5:]
-            self.curr_apdu[5:] = self.dh_pubKey_mitmBytes[245:]
+            self.dh_IFDpubKeyBytes[245:] = self.curr_apdu[5:16]
+            self.curr_apdu[5:] = self.dh_pubKey_mitmBytes[245:256]
             
 
-    def init_dh_param_out(self):
-        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_G:
-            self.dh_gBytes = self.resp[18:self.respSize-20]
 
-        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_P:
-            self.dh_pBytes = self.resp[18:self.respSize-20]
-
-        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_Q:
-            #TODO implement a proper CASN parser (ANS1)
-            tmp = []
-            tmp = self.resp[:42]
-            self.dh_qBytes = tmp[-32:]
-            self.stage = Stage.READ_DAPP_PUBKEY
-
-        if self.curr_apdu[:5] == APDU_GETDHDUOPDATA_GETDATA:
-            if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_G:
-                self.dh_gBytes += self.resp[:18]
-            if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_P:
-                self.dh_pBytes += self.resp[:18]
-
-    
     def dapp_in(self):
         if self.curr_apdu[:4] == SELECTKEY:
             iv = [0 for _ in range(8)]
+            
+            #print([hex(i) for i in self.sessENC_IFD])
+            #print([hex(i) for i in iv])
             encDes = CDES3(self.sessENC_IFD, iv)
             supp = self.curr_apdu[8:16]
             data = encDes.decrypt(supp)
-            print(data)
+            #print([hex(i) for i in data])
             data = data[:RemoveISOPad(data)]
 
             le = [0]
             head = [0x00, 0x22, 0x81, 0xb6]
             smApdu = head + [len(data)] + data + le
+            print("PIPPO", [hex(i) for i in smApdu])
             smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
 
             self.curr_apdu = smApdu.copy()
+            print("DIO", [hex(i) for i in self.curr_apdu])
         elif self.curr_apdu[:4] == VERIFYCERT1:
             iv = [0 for _ in range(8)]
             encDes = CDES3(self.sessENC_IFD, iv)
@@ -568,6 +596,29 @@ class RelayMiddleman(object):
 
         self.curr_apdu = smApdu.copy()
 
+
+
+    def init_dh_param_out(self):
+        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_G:
+            self.dh_gBytes = self.resp[18:self.respSize-20+18]
+
+        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_P:
+            self.dh_pBytes = self.resp[18:self.respSize-20+18]
+
+        if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_Q:
+            #TODO implement a proper CASN parser (ANS1)
+            tmp = []
+            tmp = self.resp[:42]
+            self.dh_qBytes = tmp[-32:]
+            self.stage = Stage.READ_DAPP_PUBKEY
+
+        if self.curr_apdu[:5] == APDU_GETDHDUOPDATA_GETDATA:
+            if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_G:
+                self.dh_gBytes += self.resp[:18]
+            if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_P:
+                self.dh_pBytes += self.resp[:18]
+
+
     def read_dapp_pubkey_out(self):
         #TODO chek if array offsets are correct
         if self.curr_apdu[:5] == ADPU_PUBKEY1:
@@ -582,21 +633,28 @@ class RelayMiddleman(object):
 
     def dh_key_exchange_out(self):
         if self.curr_apdu[:11] == APDU_GET_DATA_DATA1:
-            self.dh_ICCpubKeyBytes[:248] = self.resp[8:248]
+            self.dh_ICCpubKeyBytes[:248] = self.resp[8:248+8]
             self.resp[8:248+8] = self.dh_pubKey_mitmBytes[:248]
 
         if self.curr_apdu[:11] == APDU_GET_DATA_DATA2:
             self.dh_ICCpubKeyBytes[248:256] = self.resp[:8]
             self.resp[:8] = self.dh_pubKey_mitmBytes[248:256]
 
+            #print("dh_pubKey_mitmBytes: ")
+            #print([hex(i) for i in self.dh_pubKey_mitmBytes])
+
             self.dh_IFDpubKey = int.from_bytes(bytes(self.dh_IFDpubKeyBytes), 'big')
             self.dh_ICCpubKey = int.from_bytes(bytes(self.dh_ICCpubKeyBytes), 'big')
+
+            #print("dh_IFDpubKeyBytes: ")
+            #print([hex(i) for i in self.dh_IFDpubKeyBytes])
         
             secretIFD = pow(self.dh_IFDpubKey, self.dh_prKey_mitm, self.dh_p)
             secretIFDBytes = list(int.to_bytes(secretIFD, 256, 'big'))
             self.sessENC_IFD = list(hashlib.sha256(bytes(secretIFDBytes + DIFFENC)).digest()[:16])
             self.sessMAC_IFD = list(hashlib.sha256(bytes(secretIFDBytes + DIFFMAC)).digest()[:16])
 
+            #print([hex(i) for i in secretIFDBytes])
 
             secretICC = pow(self.dh_ICCpubKey, self.dh_prKey_mitm, self.dh_p)
             secretICCBytes = list(int.to_bytes(secretICC, 256, 'big'))
@@ -633,12 +691,13 @@ class RelayMiddleman(object):
 
             Val01 = [1]
             datafield = []
-            setASN1Tag(datafield, 0x87, Val01.append(encChallenge))
+            Val01 += encChallenge
+            setASN1Tag(datafield, 0x87, Val01)
             calcMac = self.sessSSC_IFD.copy()
             macTail= [ 0x99, 0x02, 0x90, 0x00 ]
 
-            calcMac.append(datafield)
-            calcMac.append(macTail)
+            calcMac += datafield
+            calcMac += macTail
             smMac = sigMac_IFD.mac(ISOPad(calcMac))
             sw = [ 0x90, 0x00 ]
 
@@ -673,12 +732,13 @@ class RelayMiddleman(object):
 
             Val01 = [1]
             datafield = []
-            setASN1Tag(datafield, 0x87, Val01.append(encIntAuthresp))
+            Val01 += encIntAuthresp
+            setASN1Tag(datafield, 0x87, Val01)
             calcMac = self.sessSSC_IFD.copy()
             macTail= [ 0x99, 0x02, 0x90, 0x00 ]
 
-            calcMac.append(datafield)
-            calcMac.append(macTail)
+            calcMac += datafield
+            calcMac += macTail
             smMac = sigMac_IFD.mac(ISOPad(calcMac))
             sw = [ 0x90, 0x00 ]
             data = datafield + macTail
