@@ -348,16 +348,14 @@ class RelayMiddleman(object):
         match self.stage:
             case Stage.START:
                 #self.curr_apdu is a list of int
-                if self.curr_apdu == APDU_GETDHDUOPDATA_G:
-                    self.stage = Stage.INIT_DH_PARAM
+                if self.curr_apdu == READ_READDAPPPUBKEY:
+                    self.stage = Stage.READ_DAPP_PUBKEY
             case Stage.DH_KEY_EXCHANGE:
                 self.dh_key_exchange_in()
             case Stage.DAPP:
                 self.dapp_in()
             case Stage.VERIFYPIN:
                 self.verifypin_in()
-            case Stage.READSERIALECIE:
-                self.readserialecie_in()
             
         return self.curr_apdu
 
@@ -558,49 +556,6 @@ class RelayMiddleman(object):
 
         self.curr_apdu = smApdu.copy()
 
-    def readserialecie_in(self):
-        if self.curr_apdu[:4] == SELECTFILE:
-            emptyBa = []
-            le = [0]
-            head = [0x00, 0xa4, 0x02, 0x04]
-            data = [0x10, 0x02]
-            smApdu = head + [len(data)] + data + emptyBa
-            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
-
-            self.curr_apdu = smApdu.copy()
-
-        if self.curr_apdu[:4] == ReadFile:
-            chunk = [128]
-            emptyBa = []
-            le = [0]
-            head = [0x00, 0xb0, (self.cnt >> 8) & 0xff , (self.cnt & 0xff)]
-            data = []
-            smApdu = head + [len(data)] + data + chunk
-            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
-
-            self.curr_apdu = smApdu.copy()
-
-    def readcertcie_in(self):
-        if self.curr_apdu[:4] == SELECTFILE:
-            emptyBa = []
-            le = [0]
-            head = [0x00, 0xa4, 0x02, 0x04]
-            data = [0x10, 0x03]
-            smApdu = head + [len(data)] + data + emptyBa
-            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
-
-            self.curr_apdu = smApdu.copy()
-
-        if self.curr_apdu[:4] == ReadFile:
-            chunk = [128]
-            emptyBa = []
-            le = [0]
-            head = [0x00, 0xb0, (self.cnt >> 8) & 0xff , (self.cnt & 0xff)]
-            data = []
-            smApdu = head + [len(data)] + data + chunk
-            smApdu = self.SM(self.sessENC_ICC, self.sessMAC_ICC, smApdu, self.sessSSC_ICC)
-
-            self.curr_apdu = smApdu.copy()
 
     def init_dh_param_out(self):
         if self.curr_apdu[:17] == APDU_GETDHDUOPDATA_G:
@@ -614,7 +569,7 @@ class RelayMiddleman(object):
             tmp = []
             tmp = self.resp[:42]
             self.dh_qBytes = tmp[-32:]
-            self.stage = Stage.READ_DAPP_PUBKEY
+            self.stage = Stage.DH_KEY_EXCHANGE
 
         if self.curr_apdu[:5] == APDU_GETDHDUOPDATA_GETDATA:
             if self.prev_apdu[:17] == APDU_GETDHDUOPDATA_G:
@@ -633,7 +588,7 @@ class RelayMiddleman(object):
 
         if self.curr_apdu[:5] == ADPU_PUBKEY3:
             self.resp[:9] = DEFMODULE[247:256]
-            self.stage = Stage.DH_KEY_EXCHANGE
+            self.stage = Stage.INIT_DH_PARAM
 
     def dh_key_exchange_out(self):
         if self.curr_apdu[:11] == APDU_GET_DATA_DATA1:
@@ -769,191 +724,4 @@ class RelayMiddleman(object):
 
         self.resp[:16] = crafted_resp[:16]
 
-        self.stage = Stage.READSERIALECIE
-
-
-    def readserialecie_out(self):
-        if self.curr_apdu[:4] == SELECTFILE:
-            iv = [0 for _ in range(8)]
-            encDes_ICC = CDES3(self.sessENC_ICC, iv)
-            
-            # saving the encrypted challenge
-            tmp = self.resp[3:3+32]
-            data = encDes_ICC.decrypt(tmp)
-            payload = data[:RemoveISOPad(data)]
-
-            # crafting the response
-            RelayMiddleman.increment(self.sessSSC_ICC)
-            RelayMiddleman.increment(self.sessSSC_IFD)
-            encDes_IFD = CDES3(self.sessENC_IFD, iv)
-            sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
-
-            encPayload = encDes_IFD.encrypt(ISOPad(payload))
-
-            Val01 = [1]
-            datafield = []
-            Val01 += encPayload
-            setASN1Tag(datafield, 0x87, Val01)
-            calcMac = self.sessSSC_IFD.copy()
-            macTail= [ 0x99, 0x02, 0x90, 0x00 ]
-
-            calcMac += datafield
-            calcMac += macTail
-            smMac = sigMac_IFD.mac(ISOPad(calcMac))
-            sw = [ 0x90, 0x00 ]
-
-            data = datafield + macTail
-            ccfb = []
-            setASN1Tag(ccfb, 0x8e, smMac)
-            respBa = data + ccfb + sw
-
-            self.resp = respBa.copy()
-        if self.curr_apdu[:4] == ReadFile:
-            iv = [0 for _ in range(8)]
-            encDes_ICC = CDES3(self.sessENC_ICC, iv)
-            
-            # saving the encrypted challenge
-            tmp = self.resp[3:3+16]
-            data = encDes_ICC.decrypt(tmp)
-            payload = data[:RemoveISOPad(data)]
-
-            # crafting the response
-            RelayMiddleman.increment(self.sessSSC_ICC)
-            RelayMiddleman.increment(self.sessSSC_IFD)
-            encDes_IFD = CDES3(self.sessENC_IFD, iv)
-            sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
-
-            encPayload = encDes_IFD.encrypt(ISOPad(payload))
-
-            Val01 = [1]
-            datafield = []
-            Val01 += encPayload
-            setASN1Tag(datafield, 0x87, Val01)
-            calcMac = self.sessSSC_IFD.copy()
-            macTail= [ 0x99, 0x02, 0x62, 0x82 ]
-
-            calcMac += datafield
-            calcMac += macTail
-            smMac = sigMac_IFD.mac(ISOPad(calcMac))
-            sw = [ 0x62, 0x82 ]
-
-            data = datafield + macTail
-            ccfb = []
-            setASN1Tag(ccfb, 0x8e, smMac)
-            respBa = data + ccfb + sw
-
-            self.resp = respBa.copy()
-            self.stage = Stage.READCERTCIE
-
-    def readcertcie_out(self):
-        global ReadFile
-        if self.curr_apdu[:4] == SELECTFILE:
-            iv = [0 for _ in range(8)]
-            encDes_ICC = CDES3(self.sessENC_ICC, iv)
-            
-            # saving the encrypted challenge
-            tmp = self.resp[3:3+32]
-            data = encDes_ICC.decrypt(tmp)
-            payload = data[:RemoveISOPad(data)]
-
-            # crafting the response
-            RelayMiddleman.increment(self.sessSSC_ICC)
-            RelayMiddleman.increment(self.sessSSC_IFD)
-            encDes_IFD = CDES3(self.sessENC_IFD, iv)
-            sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
-
-            encPayload = encDes_IFD.encrypt(ISOPad(payload))
-
-            Val01 = [1]
-            datafield = []
-            Val01 += encPayload
-            setASN1Tag(datafield, 0x87, Val01)
-            calcMac = self.sessSSC_IFD.copy()
-            macTail= [ 0x99, 0x02, 0x90, 0x00 ]
-
-            calcMac += datafield
-            calcMac += macTail
-            smMac = sigMac_IFD.mac(ISOPad(calcMac))
-            sw = [ 0x90, 0x00 ]
-
-            data = datafield + macTail
-            ccfb = []
-            setASN1Tag(ccfb, 0x8e, smMac)
-            respBa = data + ccfb + sw
-
-            self.resp = respBa.copy()
-        if self.curr_apdu[:4] == ReadFile:
-            if ReadFile[2] < 0x06:
-                iv = [0 for _ in range(8)]
-                encDes_ICC = CDES3(self.sessENC_ICC, iv)
-                
-                # saving the encrypted challenge
-                tmp = self.resp[3:3+0x88]
-                data = encDes_ICC.decrypt(tmp)
-                payload = data[:RemoveISOPad(data)]
-
-                # crafting the response
-                RelayMiddleman.increment(self.sessSSC_ICC)
-                RelayMiddleman.increment(self.sessSSC_IFD)
-                encDes_IFD = CDES3(self.sessENC_IFD, iv)
-                sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
-
-                encPayload = encDes_IFD.encrypt(ISOPad(payload))
-
-                Val01 = [1]
-                datafield = []
-                Val01 += encPayload
-                setASN1Tag(datafield, 0x87, Val01)
-                calcMac = self.sessSSC_IFD.copy()
-                macTail= [ 0x99, 0x02, 0x62, 0x82 ]
-
-                calcMac += datafield
-                calcMac += macTail
-                smMac = sigMac_IFD.mac(ISOPad(calcMac))
-                sw = [ 0x62, 0x82 ]
-
-                data = datafield + macTail
-                ccfb = []
-                setASN1Tag(ccfb, 0x8e, smMac)
-                respBa = data + ccfb + sw
-
-                self.cnt += 0x80
-                ReadFile[2] = (self.cnt >> 8) & 0xFF
-                ReadFile[3] = self.cnt & 0xff
-                self.resp = respBa.copy()
-            else:
-                iv = [0 for _ in range(8)]
-                encDes_ICC = CDES3(self.sessENC_ICC, iv)
-                
-                # saving the encrypted challenge
-                tmp = self.resp[3:3+0x80]
-                data = encDes_ICC.decrypt(tmp)
-                payload = data[:RemoveISOPad(data)]
-
-                # crafting the response
-                RelayMiddleman.increment(self.sessSSC_ICC)
-                RelayMiddleman.increment(self.sessSSC_IFD)
-                encDes_IFD = CDES3(self.sessENC_IFD, iv)
-                sigMac_IFD = CMAC(self.sessMAC_IFD, iv)
-
-                encPayload = encDes_IFD.encrypt(ISOPad(payload))
-
-                Val01 = [1]
-                datafield = []
-                Val01 += encPayload
-                setASN1Tag(datafield, 0x87, Val01)
-                calcMac = self.sessSSC_IFD.copy()
-                macTail= [ 0x99, 0x02, 0x62, 0x82 ]
-
-                calcMac += datafield
-                calcMac += macTail
-                smMac = sigMac_IFD.mac(ISOPad(calcMac))
-                sw = [ 0x62, 0x82 ]
-
-                data = datafield + macTail
-                ccfb = []
-                setASN1Tag(ccfb, 0x8e, smMac)
-                respBa = data + ccfb + sw
-
-                self.resp = respBa.copy()
-
+        self.stage = Stage.END
