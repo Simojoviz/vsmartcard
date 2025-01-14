@@ -28,38 +28,38 @@ def RemoveISOPad(paddedData:list):
     raise Exception("Padding error")
 
 def ASN1TLength(tag:int):
-    print("Entering ASN1TLength")
+    #print("Entering ASN1TLength")
     tLen = 0
     while tag != 0:
         tLen += 1
         tag >>= 8
     
-    print("Exiting ASN1TLength")
+    #print("Exiting ASN1TLength")
     return tLen
 
 def ASN1LLength(len:int):
-    print("Entering ASN1LLength")
+    #print("Entering ASN1LLength")
     if len < 0x80:
-        print("Exiting ASN1LLength")
+        #print("Exiting ASN1LLength")
         return 1
     else:
         if len<=0xff:
-            print("Exiting ASN1LLength")
+            #print("Exiting ASN1LLength")
             return 2
         elif len<=0xffff:
-            print("Exiting ASN1LLength")
+            #print("Exiting ASN1LLength")
             return 3
         elif len<=0xffffff:
-            print("Exiting ASN1LLength")
+            #print("Exiting ASN1LLength")
             return 4
         elif len<=0xffffffff:
-            print("Exiting ASN1LLength")
+            #print("Exiting ASN1LLength")
             return 5
     
     raise Exception("Not a valid ASN1 lenth")
 
 def putASN1Tag(tag:int, data:list):
-    print("Entering putASN1Tag")
+    #print("Entering putASN1Tag")
     tPos = 0
     while tag != 0:
         b = tag >> 24
@@ -68,10 +68,10 @@ def putASN1Tag(tag:int, data:list):
             tPos += 1
         tag <<= 8 
         tag &= 0xffffffff
-    print("Exiting putASN1Tag")
+    #print("Exiting putASN1Tag")
 
 def putASN1Length(len:int, data:list, start:int):
-    print("Entering putASN1Length")
+    #print("Entering putASN1Length")
     if len < 0x80:
         data[start+0] = len
     else:
@@ -93,11 +93,11 @@ def putASN1Length(len:int, data:list, start:int):
             data[start+2] = (len >> 16) & 0xff
             data[start+3] = (len >> 8) & 0xff
             data[start+4] = len & 0xff
-    print("Entering putASN1Length")
+    #print("Entering putASN1Length")
 
 def setASN1Tag(data:list, tag:int, content:list):
-    print(data)
-    print("Entering setASN1Tag")
+    #print(data)
+    #print("Entering setASN1Tag")
     tl = ASN1TLength(tag)
     ll = ASN1LLength(len(content))
     data += [0 for _ in range(tl+ll+len(content))]
@@ -105,7 +105,7 @@ def setASN1Tag(data:list, tag:int, content:list):
     putASN1Length(len(content), data, tl)
     data[tl+ll:] = content.copy()
 
-    print("Exiting setASN1Tag")
+    #print("Exiting setASN1Tag")
     return data
 
 def ASN1Tag(tag:int, content:list):
@@ -113,13 +113,13 @@ def ASN1Tag(tag:int, content:list):
     ll = ASN1LLength(len(content))
     result = [0 for _ in range(tl+ll+len(content))]
     putASN1Tag(tag, result)
-    print([hex(i) for i in result])
+    #print([hex(i) for i in result])
     #input = result[tl:]
     putASN1Length(len(content), result, tl)
     result[tl+ll:] = content.copy()
     
-    print(hex(tag))
-    print([hex(i) for i in result])
+    #print(hex(tag))
+    #print([hex(i) for i in result])
     return result
 
 class CDES3:
@@ -280,7 +280,7 @@ class RelayMiddleman(object):
         return tmp+tagMac+smMac+sw
 
     def SM(self, keyEnc:list, keySig:list, apdu:list, seq:list):
-        print("Entered SM")
+        #print("Entered SM")
         RelayMiddleman.increment(self.sessSSC_ICC)
         RelayMiddleman.increment(self.sessSSC_IFD)
 
@@ -300,9 +300,9 @@ class RelayMiddleman(object):
         datafield = []
         doob = []
         if apdu[4] != 0 and len(apdu) > 5:
-            print("Before enc")
-            enc = encDes.encrypt(ISOPad(apdu[5:apdu[4]]))
-            print("After enc")
+            #print("Before enc")
+            enc = encDes.encrypt(ISOPad(apdu[5:apdu[4]+5]))
+            #print("After enc")
             if (apdu[1] & 1) == 0:
                 Val01 += enc
                 setASN1Tag(doob,0x87, Val01)
@@ -313,9 +313,9 @@ class RelayMiddleman(object):
             datafield += doob
 
         if apdu[4] == 0 and len(apdu) > 7:
-            print("Before enc")
-            enc = encDes.encrypt(ISOPad(apdu[7: (apdu[5] << 8)| apdu[6] ]))
-            print("After enc")
+            #print("Before enc")
+            enc = encDes.encrypt(ISOPad(apdu[7: ((apdu[5] << 8)| apdu[6])+7]))
+            #print("After enc")
             if apdu[1] & 1 == 0:
                 Val01 += enc
                 setASN1Tag(doob, 0x87, Val01)
@@ -331,9 +331,9 @@ class RelayMiddleman(object):
             calcMac += doob
             datafield += doob
 
-        print("Before mac")
+        #print("Before mac")
         macBa = sigMac.mac(ISOPad(calcMac))
-        print("after mac")
+        #print("after mac")
 
         tagMacBa = ASN1Tag(0x8e, macBa)
         datafield += tagMacBa
@@ -436,6 +436,8 @@ class RelayMiddleman(object):
             #print(hex(self.dh_p),"\n")
             self.dh_pubKey_mitm = pow(self.dh_g, self.dh_prKey_mitm, self.dh_p)
             self.dh_pubKey_mitmBytes = list(int.to_bytes(self.dh_pubKey_mitm, 256, 'big'))
+            print("\ndh_pubKey_mitm:")
+            print(hex(self.dh_pubKey_mitm))
 
             #TODO check array offsets
             self.dh_IFDpubKeyBytes[:self.curr_apduSize-15] = self.curr_apdu[15:]
@@ -457,7 +459,6 @@ class RelayMiddleman(object):
             encDes = CDES3(self.sessENC_IFD, iv)
             supp = self.curr_apdu[8:16]
             data = encDes.decrypt(supp)
-            #print([hex(i) for i in data])
             data = data[:RemoveISOPad(data)]
 
             le = [0]
@@ -525,11 +526,14 @@ class RelayMiddleman(object):
             PRND = [random.randint(0,255) for i in range(padSize)]
             toHash = PRND + self.dh_pubKey_mitmBytes + SNIFD + self.challenge + self.dh_ICCpubKeyBytes + self.dh_gBytes + self.dh_pBytes + self.dh_qBytes 
             toHash = list(hashlib.sha256(bytes(toHash)).digest())
-            toSign = [0x6a] +  toHash + [0xbc]
+            toSignBytes = [0x6a] + PRND + toHash + [0xbc]
+            print("toSignBytes len: ", len(toSignBytes))
 
             module = int.from_bytes(DEFMODULE, 'big')
             privexp = int.from_bytes(DEFPRIVEXP, 'big')
-            signResp = pow(toSign, privexp, module)
+            toSign = int.from_bytes(toSignBytes, 'big')
+            signResp = list(int.to_bytes(pow(toSign, privexp, module), 256, 'big'))
+        
             self.chResponse = SNIFD + signResp
 
             # crafting SM apdu
@@ -586,7 +590,7 @@ class RelayMiddleman(object):
         data = encDes.decrypt(supp)
         decPin = data[:RemoveISOPad(data)]
 
-        print("PIN dec:", decPin)
+        print("\nPIN:", str([i-48 for i in decPin]))
 
         emptyBa = []
         le = [0]
@@ -661,11 +665,26 @@ class RelayMiddleman(object):
             self.sessENC_ICC = list(hashlib.sha256(bytes(secretICCBytes + DIFFENC)).digest()[:16])
             self.sessMAC_ICC = list(hashlib.sha256(bytes(secretICCBytes + DIFFMAC)).digest()[:16])
 
+            print("\ndh_ICCpubKey: ")
+            print(hex(self.dh_ICCpubKey))
+            print("\ndh_prKey_mitm: ")
+            print(hex(self.dh_prKey_mitm))
+            print("\ndh_p: ")
+            print(hex(self.dh_p))
+            print("\nsecretICC: ")
+            print(hex(secretICC))
+
             self.sessSSC_IFD = [0 for _ in range(8)]
             self.sessSSC_IFD[7] = 1
 
             self.sessSSC_ICC = [0 for _ in range(8)]
             self.sessSSC_ICC[7] = 1
+
+            print("\nsessENC_ICC: ")
+            print(hex(int.from_bytes(bytes(self.sessENC_ICC),'big')))
+
+            print("\nsessENC_IFD: ")
+            print(hex(int.from_bytes(bytes(self.sessENC_IFD), 'big')))
 
             self.stage = Stage.DAPP
 
@@ -714,11 +733,12 @@ class RelayMiddleman(object):
             toHashIFD = PRND2 + self.dh_pubKey_mitmBytes + SN_ICC + self.rndIFD + self.dh_IFDpubKeyBytes + self.dh_gBytes + self.dh_pBytes + self.dh_qBytes 
             calcHashIFD = list(hashlib.sha256(bytes(toHashIFD)).digest())
 
-            respBa = [0x6a] + PRND2 + calcHashIFD +[0xbc]
+            respBaBytes = [0x6a] + PRND2 + calcHashIFD +[0xbc]
 
             module = int.from_bytes(DEFMODULE, 'big')
             privexp = int.from_bytes(DEFPRIVEXP, 'big')
-            SIG = pow(respBa, privexp, module)
+            respBa = int.from_bytes(respBaBytes, 'big')
+            SIG = list(int.to_bytes(pow(respBa, privexp, module), 256, 'big'))
             intAuthresp = SN_ICC + SIG
 
             # crafting the SM response
